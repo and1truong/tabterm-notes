@@ -5,7 +5,7 @@ TABTERM ?= ../tabterm
 
 .DEFAULT_GOAL := help
 
-.PHONY: help install typecheck test check vendor clean
+.PHONY: help install typecheck test check build vendor clean
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
@@ -21,6 +21,9 @@ test: ## Run server + markdown round-trip tests
 	$(BUN) test
 
 check: typecheck test ## Type-check then test (the full local gate)
+
+build: ## Build self-contained dist/modules/notes/{client.js,server.js}
+	$(BUN) scripts/build-modules.ts
 
 vendor: ## Refresh vendor/module-host from a tabterm checkout (TABTERM=path)
 	@test -d "$(TABTERM)/packages/module-host" \
