@@ -1,0 +1,55 @@
+{
+  "name": "@tabterm/module-notes",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "tabterm notes module — markdown notes + Excalidraw whiteboards, session- or workspace-scoped. Extracted from the tabterm monorepo.",
+  "engines": {
+    "bun": ">=1.3.5"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@tiptap/core": "^3.27.1",
+    "@tiptap/react": "^3.27.1",
+    "@tiptap/starter-kit": "^3.27.1",
+    "@tiptap/pm": "^3.27.1",
+    "@tiptap/suggestion": "^3.27.1",
+    "@tiptap/extension-code-block-lowlight": "^3.27.1",
+    "@tiptap/extension-table": "^3.27.1",
+    "@tiptap/extension-table-row": "^3.27.1",
+    "@tiptap/extension-table-cell": "^3.27.1",
+    "@tiptap/extension-table-header": "^3.27.1",
+    "@tiptap/extension-task-item": "^3.27.1",
+    "@tiptap/extension-task-list": "^3.27.1",
+    "@tiptap/extension-link": "^3.27.1",
+    "@tiptap/extension-image": "^3.27.1",
+    "@tiptap/extension-underline": "^3.27.1",
+    "@tiptap/extension-placeholder": "^3.27.1",
+    "@tiptap/extension-document": "^3.27.1",
+    "tiptap-markdown": "^0.9.0",
+    "@excalidraw/excalidraw": "^0.18.1",
+    "marked": "^18.0.5",
+    "lowlight": "^3.3.0",
+    "highlight.js": "^11.11.1",
+    "tippy.js": "^6.3.7",
+    "lucide-react": "^0.460.0",
+    "prosemirror-markdown": "^1.13.4",
+    "prosemirror-model": "^1.25.9"
+  },
+  "peerDependencies": {
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@tabterm/module-host": "file:./vendor/module-host",
+    "@types/bun": "^1.3.14",
+    "@types/react": "^18.3.31",
+    "happy-dom": "^20.10.6",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "typescript": "^5.9.3"
+  }
+}
