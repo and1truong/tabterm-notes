@@ -49,9 +49,10 @@ To re-enable notes in tabterm, one of:
 
 1. **Path/link build input** — teach `build-modules.ts` to also build modules from an
    external path (e.g. this repo via `link:`), emitting to `dist/modules/notes/`.
-2. **Prebuilt artifact** — build here (`client.js` + `client.css` + `server.js` + sibling
-   chunks) and drop the output into tabterm's `dist/modules/notes/`, keeping the existing
-   `config.sample.yaml` entry.
+2. **Prebuilt artifact** — drop the two files from a
+   [GitHub release](https://github.com/and1truong/tabterm-notes/releases) into tabterm's
+   `dist/modules/notes/`, keeping the existing `config.sample.yaml` entry. See
+   [Install from a release](#install-from-a-release) below.
 3. **Published package** — publish `@tabterm/module-notes` and have tabterm's build pull
    and bundle it.
 
@@ -60,3 +61,36 @@ The build contract a consumer must satisfy (matches tabterm's `build-modules.ts`
   code-split since it uses dynamic `import()`);
 - extract `.css` imports → sibling `client.css` (excalidraw + tippy stylesheets);
 - bundle `server.ts` → `server.js` (`--target bun`).
+
+### Install from a release
+
+Each [release](https://github.com/and1truong/tabterm-notes/releases) ships two
+self-contained files — no build step, no host CSS wiring:
+
+- **`client.js`** — ESM client bundle. `react`/`react-dom`/`zustand` stay external
+  (host-provided at runtime); Excalidraw is inlined and its + tippy's CSS is injected
+  on load. Default export is `activate(host)`.
+- **`server.js`** — server half (`--target bun` ESM). Default export is `activate(host)`.
+
+Drop both into your tabterm host's serve tree under `modules/notes/`:
+
+```sh
+mkdir -p dist/modules/notes
+curl -L -o dist/modules/notes/client.js \
+  https://github.com/and1truong/tabterm-notes/releases/latest/download/client.js
+curl -L -o dist/modules/notes/server.js \
+  https://github.com/and1truong/tabterm-notes/releases/latest/download/server.js
+```
+
+and wire them in your tabterm config:
+
+```yaml
+modules:
+  - { id: notes, enabled: true, client: modules/notes/client.js, server: modules/notes/server.js }
+```
+
+> **Note:** these release artifacts differ in shape from what tabterm's own
+> `build-modules.ts` emits (a code-split `client.js` + sibling chunks + a separate
+> `client.css`). The release folds everything into a single self-contained `client.js`
+> — the right form for dropping in directly, but not a drop-in for a host that expects
+> the split output. Build from source (`make build`) if you need the host's exact shape.
