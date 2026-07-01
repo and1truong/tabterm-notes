@@ -1,6 +1,6 @@
 {
   "name": "@tabterm/module-notes",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "type": "module",
   "description": "tabterm notes module — markdown notes + Excalidraw whiteboards, session- or workspace-scoped. Extracted from the tabterm monorepo.",
