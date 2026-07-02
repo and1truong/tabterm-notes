@@ -1,0 +1,19 @@
+/* Tailwind input for the notes module's self-contained bundle.
+ *
+ * The module ships its own compiled utilities inside client.js (folded into the
+ * self-injecting <style> by scripts/build-modules.ts). This is necessary because
+ * the host's Tailwind only scans the host tree — not this module's src — so every
+ * utility class used *only* here (the ProseMirror prose variants, the white/neutral
+ * toolbar classes, arbitrary sizes) would otherwise never be emitted.
+ *
+ * We import ONLY theme + utilities, NOT preflight: the host owns the global reset
+ * and the CSS-variable theme (--accent, --text, --panel, --border, …). Emitting a
+ * second preflight here would fight the host's base styles.
+ */
+@layer theme, base, components, utilities;
+
+@import "tailwindcss/theme.css" layer(theme);
+@import "tailwindcss/utilities.css" layer(utilities);
+
+/* Scan this module's components for class usage. Paths are relative to this file. */
+@source "./**/*.{ts,tsx}";

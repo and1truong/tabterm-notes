@@ -99,8 +99,32 @@ function cssPrelude(css: string): string {
     `s.textContent=${JSON.stringify(css)};document.head.appendChild(s);}catch(e){}})();\n`;
 }
 
+// Compile this module's Tailwind utilities. The host's Tailwind only scans the
+// host tree, so utility classes used *only* here (the ProseMirror prose variants,
+// the white/neutral toolbar classes, arbitrary sizes) are never emitted host-side.
+// We run Tailwind over src/tailwind.css (theme + utilities, no preflight — the host
+// owns the reset) and fold the result into client.js's self-injecting <style>.
+async function buildTailwind(): Promise<string> {
+  const input = join(REPO, "src", "tailwind.css");
+  const out = join(OUT, "tailwind.tmp.css");
+  const proc = Bun.spawn(
+    ["bun", "x", "@tailwindcss/cli", "-i", input, "-o", out, "--minify"],
+    { cwd: REPO, env: { ...process.env, NODE_ENV: "production" }, stdout: "inherit", stderr: "inherit" },
+  );
+  const code = await proc.exited;
+  if (code !== 0) {
+    console.error(`[build] tailwind failed (exit ${code})`);
+    process.exit(code || 1);
+  }
+  const css = readFileSync(out, "utf8");
+  rmSync(out, { force: true });
+  return css;
+}
+
 async function buildClient(): Promise<void> {
-  const css: string[] = [];
+  // Tailwind utilities go first so the scoped vendored library CSS (Excalidraw,
+  // tippy) collected below can override where they overlap.
+  const css: string[] = [await buildTailwind()];
   // Resolve module-declared CSS deps against this module's own package.json.
   const req = createRequire(join(REPO, "package.json"));
   const res = await Bun.build({
