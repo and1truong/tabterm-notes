@@ -403,9 +403,9 @@ export function makeTasksDb(db: Database, now: () => number) {
 
   function isAvailable(task: TaskItemRow, at: number): boolean {
     if (task.state !== "pending" || hasActiveClaim(task.id, at)) return false;
-    const hasIncompleteChild = q.itemsByList.all(task.list_id)
-      .some((item) => item.parent_task_id === task.id && item.state !== "completed");
-    if (hasIncompleteChild) return false;
+    const hasChild = q.itemsByList.all(task.list_id)
+      .some((item) => item.parent_task_id === task.id);
+    if (hasChild) return false;
     return q.dependenciesForTask.all(task.id).every((dependency) => {
       return q.taskById.get(dependency.blocker_task_id)?.state === "completed";
     });

@@ -374,6 +374,18 @@ test("claim selection follows stored tree order and rejects parents and blocked 
   expect(selected.ok && selected.value.change.bundle.claims[0]?.taskId).toBe("second-child");
 });
 
+test("a reopened parent with completed children cannot be claimed", () => {
+  const { tdb } = freshTasks();
+  tdb.createTask("sess1", { id: "parent", title: "Parent" });
+  tdb.createTask("sess1", { id: "child", title: "Child", parentTaskId: "parent" });
+  expect(tdb.completeAsUser("child", "u1").ok).toBe(true);
+  expect(tdb.reopenTask("parent").ok).toBe(true);
+
+  expect(tdb.claimTask("sess1", {
+    taskId: "parent", agentId: "a1", agentLabel: "Agent",
+  })).toMatchObject({ ok: false, code: "not_available" });
+});
+
 test("renewal after thirty seconds extends the lease to two minutes from now", () => {
   const { tdb, setNow } = freshTasks();
   tdb.createTask("sess1", { id: "t1", title: "Work" });
