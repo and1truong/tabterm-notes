@@ -88,6 +88,7 @@ export interface McpToolDef {
 
 export interface ServerHost {
   id: string;
+  notes?: { apiVersion: 1 };
   // Absolute path to the host's data/config directory. Modules store files
   // under it (e.g. join(dataDir, "uploads")). Same dir core uses.
   dataDir: string;

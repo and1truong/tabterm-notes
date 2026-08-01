@@ -1,15 +1,17 @@
-import type { ClientHost } from "@tabterm/module-host/client";
-import { FileText, PanelRight } from "lucide-react";
+import type { ClientHost, DiagramEditorProps } from "@tabterm/module-host/client";
+import { FileText, PanelRight, PenTool } from "lucide-react";
 import { NotesMode } from "./NotesMode.tsx";
 import { SessionNotesPanel } from "./SessionNotesPanel.tsx";
 import { HostCtx } from "./useHost.ts";
+import ExcalidrawNote from "./ExcalidrawNote.tsx";
+import { hasCoreNotesCapability } from "../capability.ts";
 
 // Module-owned visibility flag for the session notes panel (replaces the former
 // core `showNotes` setting). Persisted + synced via host.kv; defaults to shown.
 const PANEL_VISIBLE_KEY = "notesPanelVisible";
 const panelVisible = (host: ClientHost) => host.kv.get(PANEL_VISIBLE_KEY) !== false;
 
-export default function activate(host: ClientHost) {
+export function activateLegacy(host: ClientHost) {
   const offUI = host.ui.registerUI({
     railPage: {
       id: "notes",
@@ -59,4 +61,26 @@ export default function activate(host: ClientHost) {
     return field === "content" ? existing.content !== undefined : existing.title !== undefined;
   });
   return () => { offUI(); offCollapse(); };
+}
+
+export default function activate(host: ClientHost) {
+  if (!hasCoreNotesCapability(host) || !host.notes) return activateLegacy(host);
+
+  function DiagramEditor(props: DiagramEditorProps) {
+    return (
+      <HostCtx.Provider value={host}>
+        <ExcalidrawNote {...props} />
+      </HostCtx.Provider>
+    );
+  }
+
+  return host.notes.registerDiagram({
+    Editor: DiagramEditor,
+    icon: <PenTool size={14} />,
+    summarize(content) {
+      const parsed = JSON.parse(content || "{}");
+      const count = Array.isArray(parsed.elements) ? parsed.elements.length : 0;
+      return `${count} element(s)`;
+    },
+  });
 }

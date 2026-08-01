@@ -18,6 +18,77 @@
 /* Scan this module's components for class usage. Paths are relative to this file. */
 @source "./**/*.{ts,tsx}";
 
+.excalidraw-themed .excalidraw,
+.excalidraw-themed .excalidraw.theme--default,
+.excalidraw-themed .excalidraw.theme--dark {
+  --default-bg-color: var(--bg);
+  --island-bg-color: var(--panel);
+  --input-bg-color: var(--panel);
+  --default-border-color: var(--border);
+  --color-primary: var(--accent);
+  --color-primary-light: var(--brand-bg);
+  --color-selection: var(--accent);
+  --select-highlight-color: var(--accent);
+  --text-primary-color: var(--text);
+  --button-hover-bg: var(--hover);
+  --button-active-bg: var(--active);
+  --button-selected-bg: var(--active);
+  --button-selected-border: var(--accent);
+  --button-selected-hover-bg: var(--hover);
+  --link-color: var(--accent);
+  --focus-highlight-color: var(--accent);
+  --popup-secondary-bg-color: var(--hover);
+  --popup-text-color: var(--text);
+  --input-border-color: var(--border-2);
+}
+.excalidraw-themed .excalidraw:not(.theme--dark) {
+  --color-primary-darker: #6e5800;
+  --color-primary-darkest: #4a3b00;
+}
+.excalidraw-themed .excalidraw.theme--dark {
+  --color-primary-darker: #e0b600;
+  --color-primary-darkest: #b89500;
+}
+.excalidraw-themed .excalidraw .tt-ws-logo {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 14px;
+  letter-spacing: 0.02em;
+}
+.excalidraw-themed .excalidraw .tt-ws-dot {
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  border: 2px solid var(--accent);
+}
+.excalidraw-themed .excalidraw .tt-ws-heading {
+  font-family: Excalifont, "Bradley Hand", "Snell Roundhand", cursive;
+  font-size: 38px;
+  line-height: 1;
+  color: var(--text);
+  text-align: center;
+}
+.excalidraw-themed .excalidraw .tt-ws-underline {
+  width: 168px;
+  height: 10px;
+  display: block;
+  margin: 4px auto 0;
+  stroke: var(--accent);
+  stroke-width: 2.4;
+  stroke-linecap: round;
+  fill: none;
+  opacity: 0.9;
+}
+.excalidraw-themed .excalidraw .tt-ws-sub {
+  margin: 12px auto 0;
+  max-width: 340px;
+  color: var(--muted);
+  font-size: 14px;
+  text-align: center;
+}
+
 .task-footer-resize::after {
   content: "";
   position: absolute;

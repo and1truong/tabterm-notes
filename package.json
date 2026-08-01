@@ -3,7 +3,7 @@
   "version": "0.2.0",
   "private": true,
   "type": "module",
-  "description": "tabterm notes module — markdown notes + Excalidraw whiteboards, session- or workspace-scoped. Extracted from the tabterm monorepo.",
+  "description": "Optional Excalidraw integration for tabterm core notes, with a legacy-core compatibility bridge.",
   "engines": {
     "bun": ">=1.3.5"
   },

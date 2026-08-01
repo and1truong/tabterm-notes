@@ -37,6 +37,17 @@ export interface ThemeInfo {
   colors: Record<string, string>;
 }
 
+export interface DiagramEditorProps {
+  content: string;
+  onChange(content: string): void;
+}
+
+export interface DiagramIntegration {
+  Editor: ComponentType<DiagramEditorProps>;
+  icon: ReactNode;
+  summarize(content: string): string;
+}
+
 export interface ModuleContext {
   workspaceId: string | null;
   sessionId: string | null;
@@ -118,6 +129,10 @@ export interface UIElements {
 
 export interface ClientHost {
   id: string;
+  notes?: {
+    apiVersion: 1;
+    registerDiagram(spec: DiagramIntegration): () => void;
+  };
   /**
    * @deprecated Never populated — the host has no per-module client-config
    * channel and always passed `undefined`. Use `host.settings` for

@@ -68,9 +68,9 @@ export default function ExcalidrawNote({
   useEffect(() => host.theme.subscribe((t) => setTheme(t.mode)), [host]);
 
   const ink = theme === "dark" ? "#f5f0e8" : "#1a1200"; // tabterm --text per theme
-  // Autosave debounce — groups rapid edits/zoom/pan into one write. Default 700ms,
-  // overridable via the module's own `excalidrawDebounceMs` host.kv key.
-  const debounceMs = (host.kv.get("excalidrawDebounceMs") as number | null) ?? 700;
+  // Autosave debounce is diagram-specific module configuration.
+  const configured = host.settings.get() as { excalidrawDebounceMs?: number } | null;
+  const debounceMs = configured?.excalidrawDebounceMs ?? 700;
   // Excalidraw fires onChange constantly (pointer move, selection, scroll). We
   // debounce serialization (expensive) and dedupe identical bodies. The first
   // onChange is the mount echo of `initialData` — skip it so opening a diagram

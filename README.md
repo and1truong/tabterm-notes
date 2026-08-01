@@ -1,28 +1,31 @@
 # @tabterm/module-notes
 
-The **notes** module for [tabterm](https://github.com/and1truong/tabterm) — markdown
-notes and Excalidraw whiteboards, scoped per session or per workspace. Tiptap editor,
-conflict-safe versioning, offline edit queue, image upload.
+The optional Excalidraw extension for [tabterm](https://github.com/and1truong/tabterm)
+core notes. On a capable core, this module owns diagram rendering, scene
+serialization, diagram settings, and diagram-specific CSS only. Core owns Markdown
+notes, folders, tasks, persistence, synchronization, uploads, and all Notes surfaces.
 
-Extracted from the tabterm monorepo (`modules/notes/`) into its own repository.
+This compatibility release is dual-mode: an old core receives the complete legacy
+notes feature, while a core exposing `host.notes.apiVersion === 1` receives only the
+diagram integration. This lets deployments upgrade the module before core without a
+flag-day data migration.
 
 ## Layout
 
 ```
-shared.ts            Notes domain + wire types (Note, NoteFolder, note:* messages)
-server.ts            Server entry — activate(host): migrate, onMessage, routes
-server/              DB schema + migrations, message service, image upload
-src/index.tsx        Client entry — activate(host): registerUI (rail page, panel,
-                     toggle), kv-backed visibility, offline collapse
-src/                 Tiptap editor, Excalidraw note, panels, slash menu, etc.
+capability.ts        Selects legacy or diagram-only activation
+server.ts            Diagram setting on capable core; legacy server fallback otherwise
+src/index.tsx        Registers the diagram editor on capable core
+src/ExcalidrawNote   Scene parsing, rendering, and serialization
+server/, shared.ts   Temporary old-core compatibility implementation
+src/* notes/tasks    Temporary old-core compatibility implementation
 ```
 
-The module talks to the host **only** through `@tabterm/module-host` (the type-only
-contract) plus its own files — no deep imports into tabterm's `src/`. It owns its DB
-tables (`host.migrate`), wire messages (`host.onMessage`), routes (`host.registerRoute`),
-UI (`host.ui.registerUI`), its visibility setting and Excalidraw debounce (`host.kv`),
-and its CSS (extracted at build into `client.css`). See `docs/modules.md` in tabterm
-for the full host API.
+The capable-core path talks to core through the narrow, versioned `host.notes`
+contract. The registered editor receives and emits serialized content; core owns OCC,
+transport, conflicts, and persistence and never parses Excalidraw JSON. The module's
+server half defines only `excalidrawDebounceMs`. Existing diagram rows remain normal
+`Note` rows with `type: "excalidraw"`.
 
 ## Development
 
@@ -37,24 +40,21 @@ bun test           # server + markdown round-trip tests
 devDependencies) — no npm/registry dependency. To update it, re-copy from tabterm's
 `packages/module-host/` into `vendor/module-host/`.
 
-## Consuming this module in tabterm — NOT YET WIRED
+## Consuming this module in tabterm
 
-> **Gap:** tabterm's build (`scripts/build-modules.ts`) compiles every module found
-> under its in-tree `modules/*/` directory, and `config.sample.yaml` points at
-> `dist/modules/notes/{client,server}.js`. With notes removed from the monorepo, that
-> bundle is no longer produced, so **the notes module will not load in tabterm until the
-> build is re-wired to source it from here.**
+Markdown notes and tasks need no module. To enable diagram creation and editing, use
+one of:
 
-To re-enable notes in tabterm, one of:
-
-1. **Path/link build input** — teach `build-modules.ts` to also build modules from an
-   external path (e.g. this repo via `link:`), emitting to `dist/modules/notes/`.
+1. **External config path** — build this repository and point tabterm's `notes`
+   module entry at `dist/modules/notes/client.js` and `server.js`.
 2. **Prebuilt artifact** — drop the two files from a
    [GitHub release](https://github.com/and1truong/tabterm-notes/releases) into tabterm's
    `dist/modules/notes/`, keeping the existing `config.sample.yaml` entry. See
    [Install from a release](#install-from-a-release) below.
-3. **Published package** — publish `@tabterm/module-notes` and have tabterm's build pull
+3. **Published package** — publish `@tabterm/module-notes` and have a deployment pull
    and bundle it.
+
+Do not symlink this repository under tabterm's `modules/` directory.
 
 The build contract a consumer must satisfy (matches tabterm's `build-modules.ts`):
 - bundle `src/index.tsx` → `client.js` (ESM, react/react-dom/zustand external,
