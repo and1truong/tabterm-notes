@@ -6,7 +6,7 @@
 // Unlike the host build, it deliberately ships just TWO files:
 //   * splitting is OFF, so the lazily-imported Excalidraw inlines into one client.js
 //     instead of a hashed sibling chunk;
-//   * extracted CSS (Excalidraw + tippy) is prepended to client.js as a self-injecting
+//   * extracted Excalidraw CSS is prepended to client.js as a self-injecting
 //     IIFE rather than emitted as a sibling client.css the host loader injects.
 // The result: client.js loads with styles applied and no host CSS wiring, and server.js
 // is the server half. Output lives in dist/ (gitignored). Run from the repo root.
@@ -100,8 +100,7 @@ function cssPrelude(css: string): string {
 }
 
 // Compile this module's Tailwind utilities. The host's Tailwind only scans the
-// host tree, so utility classes used *only* here (the ProseMirror prose variants,
-// the white/neutral toolbar classes, arbitrary sizes) are never emitted host-side.
+// host tree, so utility classes used only here are never emitted host-side.
 // We run Tailwind over src/tailwind.css (theme + utilities, no preflight — the host
 // owns the reset) and fold the result into client.js's self-injecting <style>.
 async function buildTailwind(): Promise<string> {
@@ -122,8 +121,8 @@ async function buildTailwind(): Promise<string> {
 }
 
 async function buildClient(): Promise<void> {
-  // Tailwind utilities go first so the scoped vendored library CSS (Excalidraw,
-  // tippy) collected below can override where they overlap.
+  // Tailwind utilities go first so Excalidraw's collected CSS can override
+  // where they overlap.
   const css: string[] = [await buildTailwind()];
   // Resolve module-declared CSS deps against this module's own package.json.
   const req = createRequire(join(REPO, "package.json"));
@@ -134,8 +133,7 @@ async function buildClient(): Promise<void> {
     minify: true,
     external: CLIENT_EXTERNALS,
     plugins: [cssCollectPlugin(css, req, CLIENT_SRC)],
-    // Splitting OFF: the lazy Excalidraw import inlines into the single client.js
-    // instead of a hashed sibling chunk, so only one client file ships.
+    // Splitting OFF so only one self-contained client file ships.
     splitting: false,
     naming: { entry: "client.js" },
   });

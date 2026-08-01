@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { hasCoreNotesCapability } from "./capability.ts";
 
-test("old core selects the complete legacy notes activation", () => {
+test("old core is unsupported by the diagram-only module", () => {
   expect(hasCoreNotesCapability({})).toBe(false);
 });
 

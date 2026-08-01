@@ -11,13 +11,13 @@ help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
 		| awk 'BEGIN{FS=":.*?## "}{printf "  \033[36m%-10s\033[0m %s\n", $$1, $$2}'
 
-install: ## Install deps (resolves tiptap/excalidraw + vendored module-host)
+install: ## Install deps (resolves Excalidraw + vendored module-host)
 	$(BUN) install
 
 typecheck: ## Type-check the module against the host contract
 	$(BUN) run typecheck
 
-test: ## Run server + markdown round-trip tests
+test: ## Run module tests
 	$(BUN) test
 
 check: typecheck test ## Type-check then test (the full local gate)

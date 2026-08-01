@@ -3,8 +3,8 @@
  * The module ships its own compiled utilities inside client.js (folded into the
  * self-injecting <style> by scripts/build-modules.ts). This is necessary because
  * the host's Tailwind only scans the host tree — not this module's src — so every
- * utility class used *only* here (the ProseMirror prose variants, the white/neutral
- * toolbar classes, arbitrary sizes) would otherwise never be emitted.
+ * utility class used only by the diagram integration would otherwise never be
+ * emitted.
  *
  * We import ONLY theme + utilities, NOT preflight: the host owns the global reset
  * and the CSS-variable theme (--accent, --text, --panel, --border, …). Emitting a
@@ -87,39 +87,4 @@
   color: var(--muted);
   font-size: 14px;
   text-align: center;
-}
-
-.task-footer-resize::after {
-  content: "";
-  position: absolute;
-  inset: 3px 0 auto;
-  height: 1px;
-  background: var(--border);
-}
-
-.task-footer-resize:hover::after {
-  height: 2px;
-  background: var(--border-2);
-}
-
-.task-markdown > :first-child { margin-top: 0; }
-.task-markdown > :last-child { margin-bottom: 0; }
-.task-markdown p { margin: 0.35em 0; }
-.task-markdown ul, .task-markdown ol { margin: 0.35em 0; padding-left: 1.25em; }
-.task-markdown ul { list-style: disc; }
-.task-markdown ol { list-style: decimal; }
-.task-markdown code {
-  border-radius: 3px;
-  background: var(--hover);
-  padding: 0.08em 0.3em;
-  font-family: var(--mono-font, ui-monospace, monospace);
-  font-size: 0.9em;
-}
-.task-markdown pre { margin: 0.45em 0; overflow-x: auto; border-radius: 5px; background: var(--hover); padding: 0.5em; }
-.task-markdown pre code { background: transparent; padding: 0; }
-.task-markdown a { color: var(--accent); text-decoration: underline; text-underline-offset: 2px; }
-.task-markdown blockquote { margin: 0.4em 0; border-left: 2px solid var(--border-2); padding-left: 0.6em; color: var(--muted); }
-
-@media (hover: none) {
-  .task-footer-resize::after { height: 2px; }
 }

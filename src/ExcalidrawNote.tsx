@@ -7,12 +7,8 @@ import {
 import "@excalidraw/excalidraw/index.css";
 import { useHost } from "./useHost.ts";
 
-// Default-exported so NotesPanel can lazy-load it (React.lazy needs a default
-// export), which keeps Excalidraw's large bundle + CSS out of the main chunk
-// until a diagram note is actually opened.
-//
-// Contract mirrors TiptapEditor: `content` is the canonical serialized scene
-// (JSON string, or "" for an empty diagram) loaded once at mount; `onChange`
+// `content` is the canonical serialized scene (JSON string, or "" for an empty
+// diagram) loaded once at mount; `onChange`
 // emits a freshly serialized scene. NotesPanel keys this component by note id,
 // so switching notes remounts it with fresh `content` — we never need to react
 // to `content` changes after mount.
