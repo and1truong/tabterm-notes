@@ -4,6 +4,7 @@ import { useHost } from "./useHost.ts";
 import { NotesPanel } from "./NotesPanel.tsx";
 import { NotesModal } from "./NotesModal.tsx";
 import { useInitialLoad } from "./useInitialLoad.ts";
+import { TaskFooter } from "./tasks/TaskFooter.tsx";
 
 // Registered into the host right-sidebar slot. Shows the ACTIVE session's notes
 // (resolved reactively from host.context), with a pop-out modal. Renders nothing
@@ -14,6 +15,7 @@ export function SessionNotesPanel() {
   // Reactively track just the active session id — re-renders only when it changes.
   const sessionId = host.context.select((s) => s.activeSessionId);
   const [modalOpen, setModalOpen] = useState(false);
+  const [, setTaskModalOpen] = useState(false);
   if (!sessionId) return null;
   return (
     <aside className="flex-1 min-h-0 float-card flex flex-col overflow-hidden">
@@ -31,6 +33,7 @@ export function SessionNotesPanel() {
       <div className="flex-1 min-h-0">
         <NotesPanel key={sessionId} sessionId={sessionId} />
       </div>
+      <TaskFooter host={host} sessionId={sessionId} onOpenModal={() => setTaskModalOpen(true)} />
       <NotesModal sessionId={sessionId} open={modalOpen} onClose={() => setModalOpen(false)} />
     </aside>
   );
