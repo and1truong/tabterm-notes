@@ -52,11 +52,10 @@ export function buildTaskTree(bundle: TaskBundle): TaskNode[] {
   function finish(node: TaskNode): void {
     node.children.sort(byPosition);
     for (const child of node.children) finish(child);
-    const hasIncompleteChild = node.children.some((child) => child.task.state !== "completed");
     const hasIncompleteBlocker = node.blockers.some((blocker) => blocker.state !== "completed");
     const hasUnexpiredClaim = node.claim !== null && node.claim.leaseExpiresAt > Date.now();
     node.available = node.task.state === "pending"
-      && !hasIncompleteChild
+      && node.children.length === 0
       && !hasIncompleteBlocker
       && !hasUnexpiredClaim;
   }

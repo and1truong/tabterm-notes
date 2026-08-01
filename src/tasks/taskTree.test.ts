@@ -172,6 +172,15 @@ describe("task tree projection", () => {
     expect(byId.get("expired")).toMatchObject({ available: true, claim: { agentLabel: "Old" } });
     expect(byId.get("in-progress")!.available).toBe(false);
   });
+
+  test("keeps a pending parent unavailable when its only child is completed", () => {
+    const nodes = buildTaskTree(bundle([
+      item("reopened-parent"),
+      item("completed-child", { parentTaskId: "reopened-parent", state: "completed" }),
+    ]));
+
+    expect(nodes[0]!.available).toBe(false);
+  });
 });
 
 test("an empty task bundle reuses module-level stable array references", () => {
