@@ -7,8 +7,14 @@ export interface RailPage { id: string; icon: ReactNode; label: string; componen
 export interface SidebarPanel { id: string; icon: ReactNode; label: string; component: ComponentType<any> }
 // `visible` lets an action gate itself (e.g. show only on the session view).
 // The host filters on it; omitted → always shown.
-export interface TabBarAction { id: string; icon: ReactNode; tooltip: string; onClick: () => void; visible?: () => boolean }
-export interface HeaderItem { id: string; component: ComponentType<any> }
+// `weight` orders items within their slot (ascending, default 0); ties keep
+// registration order. Use a large weight to sit last (far right), negative to
+// sit first — see HeaderItem.
+export interface TabBarAction { id: string; icon: ReactNode; tooltip: string; onClick: () => void; visible?: () => boolean; weight?: number }
+// `weight` orders header items within the top-chrome cluster (ascending,
+// default 0); ties keep registration order, so unweighted items stay in load
+// order. A high weight sinks the item to the far right of the module chips.
+export interface HeaderItem { id: string; component: ComponentType<any>; weight?: number }
 export type FooterItem = HeaderItem;
 export interface FloatingBox { id: string; component: ComponentType<any> }
 // `visible` lets a panel declare when it has anything to show. The host gates the
@@ -112,7 +118,13 @@ export interface UIElements {
 
 export interface ClientHost {
   id: string;
-  config: unknown;
+  /**
+   * @deprecated Never populated — the host has no per-module client-config
+   * channel and always passed `undefined`. Use `host.settings` for
+   * schema-validated module config. Kept optional for one contract version so
+   * external modules that mention the field keep compiling; will be removed.
+   */
+  config?: unknown;
   ui: {
     // Mount one or more UI elements in a single call and get ONE teardown back:
     // calling the returned fn unregisters everything this call registered, in
@@ -164,6 +176,9 @@ export interface ClientHost {
     playChime(soundId: string, volume: number): void;
     notify(opts: { title: string; body?: string }): void;
     attention(sessionId: string): void;
+    // Jump the UI to a session (sidebar selection + terminal focus) — the same
+    // action an attention-toast click performs.
+    focusSession(sessionId: string): void;
   };
   kv: {
     get(key: string): unknown;
@@ -182,7 +197,11 @@ export interface ClientHost {
     schema(): JsonSchema | null;
   };
   store: {
-    use<T>(selector: (s: Record<string, Record<string, any>>) => T): T;
+    // React hook over the module's own synced store. Pass `eq` (e.g. shallowEqual)
+    // whenever the selector returns a FRESH object/array each call — without it the
+    // default Object.is sees a new reference every render and loops (React #185).
+    // Selecting a stable bucket and deriving in useMemo works too.
+    use<T>(selector: (s: Record<string, Record<string, any>>) => T, eq?: EqualityFn<T>): T;
     getState(): Record<string, Record<string, any>>;
     setState(fn: (s: Record<string, Record<string, any>>) => Record<string, Record<string, any>>): void;
     patch(p: { entity: string; op: "set" | "delete"; data?: any; id?: string }): void;

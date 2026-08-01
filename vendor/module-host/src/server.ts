@@ -63,6 +63,29 @@ export interface RoomSpec {
   onIdle?: (key: string) => void;     // fires when a key's last subscriber leaves
 }
 
+// Identity of the tabterm session an MCP tool call originates from, resolved
+// from the request's X-Tabterm-Session-Id header. Both fields are null when the
+// header is missing or names a session that no longer exists — identity-needing
+// tools should error in-band; identity-free tools ignore it.
+export interface McpToolContext {
+  sessionId: string | null;
+  workspaceId: string | null;
+}
+
+// A tool a module exposes to MCP clients (Claude Code panes) via
+// host.registerMcpTool. The exposed name is `<moduleId>_<name>` unless `name`
+// already carries that prefix, so authors pick short verbs ("open", "list").
+export interface McpToolDef {
+  name: string;
+  description: string;
+  // Flat JSON Schema for the arguments object. The host validates required keys
+  // and primitive types before calling handler; nested shapes aren't checked.
+  inputSchema: JsonSchema;
+  // Returns a text result. A thrown Error becomes an isError result carrying its
+  // message; the host also wraps the call in a timeout.
+  handler(args: Record<string, unknown>, ctx: McpToolContext): string | Promise<string>;
+}
+
 export interface ServerHost {
   id: string;
   // Absolute path to the host's data/config directory. Modules store files
@@ -76,6 +99,11 @@ export interface ServerHost {
   // returns the new state but skips broadcast() leaves every client (including
   // the caller) stale until it re-reads — e.g. on refresh. See broadcast below.
   registerRpc(method: string, handler: RpcHandler): void;
+  // Expose a tool to MCP clients (Claude Code panes) at the host's POST /mcp
+  // endpoint. Mirrors registerRpc/registerRoute: the registration lives in the
+  // module's registry and is torn down with it. Throws at activate() on a
+  // duplicate exposed name within this module or a collision with a core tool.
+  registerMcpTool(def: McpToolDef): void;
   // Fan a `module:event` out to ALL clients (including the action's originator;
   // see ws.ts broadcast()). This is the ONLY live-update path: the client mirror
   // is host.events.on(event, …). So every state change a client should see live
@@ -123,6 +151,25 @@ export interface ServerHost {
   interval(ms: number, cb: () => void): () => void;
   now(): number;
   workspaces: { get(id: string): { id: string; cwd: string } | null };
+  // Programmatic session control for automation modules (workflows). create()
+  // persists the session, broadcasts the core patch, and boots its PTY headlessly
+  // so it runs with no viewer. write() types into the PTY. onEvent() taps the
+  // session status stream (Claude hooks / tmux poller / statusline pings).
+  sessions: {
+    create(opts: {
+      primaryTabId: string;
+      groupId?: string;
+      label: string;
+      kind?: string;
+      cwd?: string;
+    }): Promise<{ sessionId: string } | null>;
+    createGroup(primaryTabId: string, label: string): { groupId: string } | null;
+    write(sessionId: string, text: string): boolean;
+    onEvent(cb: (e:
+      | { kind: "status"; sessionId: string; status: "running" | "idle" }
+      | { kind: "claude-status"; sessionId: string }
+    ) => void): () => void;
+  };
   room(id: string, spec: RoomSpec): () => void;
 }
 

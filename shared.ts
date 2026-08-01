@@ -43,3 +43,79 @@ export type NoteClientMessage =
 
 // Server -> sender (unicast).
 export type NoteServerMessage = { type: "note:conflict"; note: Note };
+
+export type TaskState = "pending" | "in_progress" | "completed";
+export type TaskActorType = "user" | "agent";
+export type TaskCommentKind = "comment" | "completion_summary";
+
+export interface TaskList {
+  id: string;
+  sessionId: string;
+  createdAt: number;
+  updatedAt: number;
+}
+export interface TaskItem {
+  id: string;
+  listId: string;
+  parentTaskId: string | null;
+  title: string;
+  detailsMarkdown: string;
+  position: number;
+  state: TaskState;
+  completedAt: number | null;
+  completedByType: TaskActorType | null;
+  completedById: string | null;
+  createdAt: number;
+  updatedAt: number;
+}
+export interface TaskDependency { taskId: string; blockerTaskId: string; createdAt: number }
+export interface TaskClaim {
+  taskId: string;
+  agentId: string;
+  agentLabel: string;
+  claimedAt: number;
+  leaseExpiresAt: number;
+  lastSeenCommentId: string | null;
+}
+export interface TaskComment {
+  id: string;
+  taskId: string;
+  authorType: TaskActorType;
+  authorId: string;
+  authorLabel: string;
+  bodyMarkdown: string;
+  kind: TaskCommentKind;
+  createdAt: number;
+  updatedAt: number | null;
+}
+export interface TaskBundle {
+  list: TaskList | null;
+  items: TaskItem[];
+  dependencies: TaskDependency[];
+  claims: TaskClaim[];
+  comments: TaskComment[];
+}
+export interface TaskChangeSet {
+  bundle: TaskBundle;
+  deleted: Array<{ entity: "taskItem" | "taskDependency" | "taskClaim" | "taskComment"; id: string }>;
+}
+export type TaskErrorCode =
+  | "not_found" | "claimed" | "not_available" | "lease_expired"
+  | "lease_mismatch" | "unseen_comments" | "hierarchy_cycle"
+  | "dependency_cycle" | "cross_list" | "invalid_input";
+export type TaskMutationResult<T = TaskChangeSet> =
+  | { ok: true; value: T }
+  | { ok: false; code: TaskErrorCode; message: string; value?: TaskBundle };
+
+export type TaskCommand =
+  | { type: "task:create"; sessionId: string; id: string; title: string; parentTaskId?: string }
+  | { type: "task:update"; taskId: string; title?: string; detailsMarkdown?: string }
+  | { type: "task:move"; taskId: string; parentTaskId: string | null; position: number }
+  | { type: "task:dependency:set"; taskId: string; blockerTaskIds: string[] }
+  | { type: "task:complete"; taskId: string }
+  | { type: "task:reopen"; taskId: string }
+  | { type: "task:delete"; taskId: string; keepChildren: boolean }
+  | { type: "task:forceRelease"; taskId: string }
+  | { type: "task:comment"; taskId: string; id: string; bodyMarkdown: string }
+  | { type: "task:comment:update"; commentId: string; bodyMarkdown: string }
+  | { type: "task:comment:delete"; commentId: string };
