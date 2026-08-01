@@ -1,5 +1,5 @@
 import type { Database } from "bun:sqlite";
-import { randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import type {
   TaskBundle,
   TaskChangeSet,
@@ -50,6 +50,10 @@ interface TaskClaimRow {
   last_seen_comment_id: string | null;
 }
 
+interface TaskClaimAuthRow extends TaskClaimRow {
+  lease_token_hash: string;
+}
+
 interface TaskCommentRow {
   id: string;
   task_id: string;
@@ -64,6 +68,10 @@ interface TaskCommentRow {
 
 type DeletedEntity = TaskChangeSet["deleted"][number];
 type TaskFailure = Extract<TaskMutationResult, { ok: false }>;
+type ClaimResult = TaskMutationResult<{ change: TaskChangeSet; leaseToken: string }>;
+
+export const TASK_LEASE_MS = 120_000;
+export const TASK_RENEW_MS = 30_000;
 
 const toTaskList = (row: TaskListRow): TaskList => ({
   id: row.id,
@@ -160,6 +168,9 @@ export function makeTasksDb(db: Database, now: () => number) {
     setPendingIfInProgress: db.query(
       "UPDATE task_items SET state = 'pending', updated_at = ? WHERE id = ? AND state = 'in_progress'",
     ),
+    setInProgress: db.query(
+      "UPDATE task_items SET state = 'in_progress', updated_at = ? WHERE id = ?",
+    ),
     setCompleted: db.query(
       "UPDATE task_items SET state = 'completed', completed_at = ?, completed_by_type = ?, " +
         "completed_by_id = ?, updated_at = ? WHERE id = ?",
@@ -189,11 +200,34 @@ export function makeTasksDb(db: Database, now: () => number) {
     activeClaim: db.query<{ task_id: string }, [string, number]>(
       "SELECT task_id FROM task_claims WHERE task_id = ? AND lease_expires_at > ?",
     ),
+    claimByTask: db.query<TaskClaimAuthRow, [string]>("SELECT * FROM task_claims WHERE task_id = ?"),
+    insertClaim: db.query(
+      "INSERT INTO task_claims " +
+        "(task_id, agent_id, agent_label, lease_token_hash, claimed_at, lease_expires_at) " +
+        "VALUES (?, ?, ?, ?, ?, ?)",
+    ),
+    renewClaim: db.query("UPDATE task_claims SET lease_expires_at = ? WHERE task_id = ?"),
+    setLastSeenComment: db.query(
+      "UPDATE task_claims SET last_seen_comment_id = ? WHERE task_id = ?",
+    ),
     deleteClaim: db.query("DELETE FROM task_claims WHERE task_id = ?"),
     commentsByList: db.query<TaskCommentRow, [string]>(
       "SELECT c.* FROM task_comments c JOIN task_items t ON t.id = c.task_id " +
         "WHERE t.list_id = ? ORDER BY c.created_at, c.rowid",
     ),
+    commentsByTask: db.query<TaskCommentRow, [string]>(
+      "SELECT * FROM task_comments WHERE task_id = ? ORDER BY created_at, rowid",
+    ),
+    commentById: db.query<TaskCommentRow, [string]>("SELECT * FROM task_comments WHERE id = ?"),
+    insertComment: db.query(
+      "INSERT INTO task_comments " +
+        "(id, task_id, author_type, author_id, author_label, body_markdown, kind, created_at) " +
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+    ),
+    updateComment: db.query(
+      "UPDATE task_comments SET body_markdown = ?, updated_at = ? WHERE id = ?",
+    ),
+    deleteComment: db.query("DELETE FROM task_comments WHERE id = ?"),
   };
 
   function pushDeleted(deleted: DeletedEntity[], entity: DeletedEntity["entity"], id: string) {
@@ -206,11 +240,11 @@ export function makeTasksDb(db: Database, now: () => number) {
     throw new MutationAbort(failed(code, message));
   }
 
-  function mutate(run: () => TaskMutationResult): TaskMutationResult {
+  function mutate<T>(run: () => TaskMutationResult<T>): TaskMutationResult<T> {
     try {
       return db.transaction(run)();
     } catch (error) {
-      if (error instanceof MutationAbort) return error.result;
+      if (error instanceof MutationAbort) return error.result as TaskMutationResult<T>;
       throw error;
     }
   }
@@ -243,6 +277,37 @@ export function makeTasksDb(db: Database, now: () => number) {
 
   function hasActiveClaim(taskId: string, at: number): boolean {
     return q.activeClaim.get(taskId, at) !== null;
+  }
+
+  function hashLeaseToken(token: string): string {
+    return createHash("sha256").update(token).digest("hex");
+  }
+
+  function matchesLeaseToken(claim: TaskClaimAuthRow, token: string): boolean {
+    const expected = Buffer.from(claim.lease_token_hash, "hex");
+    const actual = Buffer.from(hashLeaseToken(token), "hex");
+    return expected.length === actual.length && timingSafeEqual(expected, actual);
+  }
+
+  function orderedTaskIds(listId: string): string[] {
+    const items = q.itemsByList.all(listId);
+    const byParent = new Map<string | null, TaskItemRow[]>();
+    for (const item of items) {
+      const siblings = byParent.get(item.parent_task_id) ?? [];
+      siblings.push(item);
+      byParent.set(item.parent_task_id, siblings);
+    }
+    for (const siblings of byParent.values()) siblings.sort((a, b) => a.position - b.position);
+
+    const ordered: string[] = [];
+    const visit = (parentTaskId: string | null) => {
+      for (const item of byParent.get(parentTaskId) ?? []) {
+        ordered.push(item.id);
+        visit(item.id);
+      }
+    };
+    visit(null);
+    return ordered;
   }
 
   function reopenUpwards(taskId: string | null, at: number) {
@@ -569,6 +634,305 @@ export function makeTasksDb(db: Database, now: () => number) {
     });
   }
 
+  function claimTask(
+    sessionId: string,
+    input: { taskId?: string; agentId: string; agentLabel: string },
+  ): ClaimResult {
+    const agentLabel = input.agentLabel.trim();
+    if (input.agentId.length === 0 || agentLabel.length === 0) {
+      return failed("invalid_input", "Agent identity is required");
+    }
+
+    return mutate(() => {
+      const at = now();
+      const list = q.listBySession.get(sessionId);
+      if (!list) abort("not_found", "Task list not found");
+      const deleted: DeletedEntity[] = [];
+      expireClaims(list.id, at, deleted);
+
+      let task: TaskItemRow | null = null;
+      if (input.taskId !== undefined) {
+        task = q.taskById.get(input.taskId);
+        if (!task) abort("not_found", "Task not found");
+        if (task.list_id !== list.id) abort("cross_list", "Task belongs to another list");
+        if (hasActiveClaim(task.id, at)) abort("claimed", "Task is already claimed");
+        if (!isAvailable(task, at)) abort("not_available", "Task is not available");
+      } else {
+        for (const taskId of orderedTaskIds(list.id)) {
+          const candidate = q.taskById.get(taskId)!;
+          if (isAvailable(candidate, at)) {
+            task = candidate;
+            break;
+          }
+        }
+        if (!task) abort("not_available", "No task is available");
+      }
+
+      const leaseToken = randomBytes(32).toString("base64url");
+      q.setInProgress.run(at, task.id);
+      q.insertClaim.run(
+        task.id,
+        input.agentId,
+        agentLabel,
+        hashLeaseToken(leaseToken),
+        at,
+        at + TASK_LEASE_MS,
+      );
+      q.touchList.run(at, list.id);
+      const change = changed(list.id, deleted);
+      if (!change.ok) return change;
+      return { ok: true, value: { change: change.value, leaseToken } };
+    });
+  }
+
+  function renewClaim(taskId: string, leaseToken: string): TaskMutationResult<TaskClaim> {
+    return mutate(() => {
+      const at = now();
+      const task = q.taskById.get(taskId);
+      if (!task) abort("not_found", "Task not found");
+      const claim = q.claimByTask.get(taskId);
+      expireClaims(task.list_id, at, []);
+      if (!claim || claim.lease_expires_at <= at) {
+        return failed("lease_expired", "Task lease has expired");
+      }
+      if (!matchesLeaseToken(claim, leaseToken)) {
+        return failed("lease_mismatch", "Lease token does not match");
+      }
+      q.renewClaim.run(at + TASK_LEASE_MS, taskId);
+      q.touchList.run(at, task.list_id);
+      return { ok: true, value: toTaskClaim(q.claimByTask.get(taskId)!) };
+    });
+  }
+
+  function ackComments(
+    taskId: string,
+    leaseToken: string,
+    lastSeenCommentId: string | null,
+  ): TaskMutationResult<TaskClaim> {
+    return mutate(() => {
+      const at = now();
+      const task = q.taskById.get(taskId);
+      if (!task) abort("not_found", "Task not found");
+      const claim = q.claimByTask.get(taskId);
+      expireClaims(task.list_id, at, []);
+      if (!claim || claim.lease_expires_at <= at) {
+        return failed("lease_expired", "Task lease has expired");
+      }
+      if (!matchesLeaseToken(claim, leaseToken)) {
+        return failed("lease_mismatch", "Lease token does not match");
+      }
+
+      const comments = q.commentsByTask.all(taskId);
+      const currentIndex = claim.last_seen_comment_id === null
+        ? -1
+        : comments.findIndex((comment) => comment.id === claim.last_seen_comment_id);
+      const nextIndex = lastSeenCommentId === null
+        ? -1
+        : comments.findIndex((comment) => comment.id === lastSeenCommentId);
+      if (lastSeenCommentId !== null && nextIndex < 0) {
+        abort("not_found", "Comment not found on task");
+      }
+      if (nextIndex < currentIndex) abort("invalid_input", "Comment acknowledgement cannot move backwards");
+
+      q.setLastSeenComment.run(lastSeenCommentId, taskId);
+      q.touchList.run(at, task.list_id);
+      return { ok: true, value: toTaskClaim(q.claimByTask.get(taskId)!) };
+    });
+  }
+
+  function addComment(
+    taskId: string,
+    input: {
+      id: string;
+      authorType: "user" | "agent";
+      authorId: string;
+      authorLabel: string;
+      bodyMarkdown: string;
+    },
+  ): TaskMutationResult {
+    const bodyMarkdown = input.bodyMarkdown.trim();
+    const authorLabel = input.authorLabel.trim();
+    if (bodyMarkdown.length === 0) return failed("invalid_input", "Comment body is required");
+    if (input.id.length === 0 || input.authorId.length === 0 || authorLabel.length === 0) {
+      return failed("invalid_input", "Comment identity is required");
+    }
+
+    return mutate(() => {
+      const at = now();
+      const task = q.taskById.get(taskId);
+      if (!task) abort("not_found", "Task not found");
+      if (q.commentById.get(input.id)) abort("invalid_input", "Comment id already exists");
+      q.insertComment.run(
+        input.id,
+        taskId,
+        input.authorType,
+        input.authorId,
+        authorLabel,
+        bodyMarkdown,
+        "comment",
+        at,
+      );
+      q.touchList.run(at, task.list_id);
+      return changed(task.list_id, []);
+    });
+  }
+
+  function updateComment(
+    commentId: string,
+    input: { authorType: "user" | "agent"; authorId: string; bodyMarkdown: string },
+  ): TaskMutationResult {
+    const bodyMarkdown = input.bodyMarkdown.trim();
+    if (bodyMarkdown.length === 0) return failed("invalid_input", "Comment body is required");
+
+    return mutate(() => {
+      const at = now();
+      const comment = q.commentById.get(commentId);
+      if (!comment) abort("not_found", "Comment not found");
+      const task = q.taskById.get(comment.task_id)!;
+      if (comment.kind !== "comment" ||
+        comment.author_type !== input.authorType || comment.author_id !== input.authorId) {
+        abort("not_available", "Comment is not mutable by this actor");
+      }
+      q.updateComment.run(bodyMarkdown, at, commentId);
+      q.touchList.run(at, task.list_id);
+      return changed(task.list_id, []);
+    });
+  }
+
+  function deleteComment(
+    commentId: string,
+    actor: { authorType: "user" | "agent"; authorId: string },
+  ): TaskMutationResult {
+    return mutate(() => {
+      const at = now();
+      const comment = q.commentById.get(commentId);
+      if (!comment) abort("not_found", "Comment not found");
+      const task = q.taskById.get(comment.task_id)!;
+      if (comment.kind !== "comment" ||
+        comment.author_type !== actor.authorType || comment.author_id !== actor.authorId) {
+        abort("not_available", "Comment is not mutable by this actor");
+      }
+      q.deleteComment.run(commentId);
+      q.touchList.run(at, task.list_id);
+      return changed(task.list_id, [{ entity: "taskComment", id: commentId }]);
+    });
+  }
+
+  function releaseClaim(
+    taskId: string,
+    leaseToken: string,
+    bodyMarkdown?: string,
+  ): TaskMutationResult {
+    const body = bodyMarkdown?.trim();
+    if (bodyMarkdown !== undefined && body?.length === 0) {
+      return failed("invalid_input", "Comment body is required");
+    }
+
+    return mutate(() => {
+      const at = now();
+      const task = q.taskById.get(taskId);
+      if (!task) abort("not_found", "Task not found");
+      const claim = q.claimByTask.get(taskId);
+      const deleted: DeletedEntity[] = [];
+      expireClaims(task.list_id, at, deleted);
+      if (!claim || claim.lease_expires_at <= at) {
+        return failed("lease_expired", "Task lease has expired");
+      }
+      if (!matchesLeaseToken(claim, leaseToken)) {
+        return failed("lease_mismatch", "Lease token does not match");
+      }
+      if (body !== undefined) {
+        q.insertComment.run(
+          randomUUID(),
+          taskId,
+          "agent",
+          claim.agent_id,
+          claim.agent_label,
+          body,
+          "comment",
+          at,
+        );
+      }
+      q.deleteClaim.run(taskId);
+      q.setPendingIfInProgress.run(at, taskId);
+      pushDeleted(deleted, "taskClaim", taskId);
+      q.touchList.run(at, task.list_id);
+      return changed(task.list_id, deleted);
+    });
+  }
+
+  function forceRelease(taskId: string): TaskMutationResult {
+    return mutate(() => {
+      const at = now();
+      const task = q.taskById.get(taskId);
+      if (!task) abort("not_found", "Task not found");
+      const deleted: DeletedEntity[] = [];
+      expireClaims(task.list_id, at, deleted);
+      if (q.claimByTask.get(taskId)) {
+        q.deleteClaim.run(taskId);
+        q.setPendingIfInProgress.run(at, taskId);
+        pushDeleted(deleted, "taskClaim", taskId);
+        q.touchList.run(at, task.list_id);
+      }
+      return changed(task.list_id, deleted);
+    });
+  }
+
+  function completeAsAgent(
+    taskId: string,
+    leaseToken: string,
+    agentId: string,
+    summaryMarkdown: string,
+  ): TaskMutationResult {
+    const summary = summaryMarkdown.trim();
+
+    return mutate(() => {
+      const at = now();
+      const task = q.taskById.get(taskId);
+      if (!task) abort("not_found", "Task not found");
+      const claim = q.claimByTask.get(taskId);
+      const deleted: DeletedEntity[] = [];
+      expireClaims(task.list_id, at, deleted);
+      if (!claim || claim.lease_expires_at <= at) {
+        return failed("lease_expired", "Task lease has expired");
+      }
+      if (!matchesLeaseToken(claim, leaseToken) || claim.agent_id !== agentId) {
+        return failed("lease_mismatch", "Lease does not belong to this agent");
+      }
+      if (summary.length === 0) return failed("invalid_input", "Completion summary is required");
+
+      const comments = q.commentsByTask.all(taskId);
+      const lastSeenIndex = claim.last_seen_comment_id === null
+        ? -1
+        : comments.findIndex((comment) => comment.id === claim.last_seen_comment_id);
+      if (comments.length > lastSeenIndex + 1) {
+        return {
+          ok: false,
+          code: "unseen_comments",
+          message: "Task has unseen comments",
+          value: bundleForList(q.listById.get(task.list_id)!),
+        };
+      }
+
+      q.insertComment.run(
+        randomUUID(),
+        taskId,
+        "agent",
+        claim.agent_id,
+        claim.agent_label,
+        summary,
+        "completion_summary",
+        at,
+      );
+      q.setCompleted.run(at, "agent", agentId, at, taskId);
+      q.deleteClaim.run(taskId);
+      pushDeleted(deleted, "taskClaim", taskId);
+      rollUpParents(task.parent_task_id, "agent", agentId, at);
+      q.touchList.run(at, task.list_id);
+      return changed(task.list_id, deleted);
+    });
+  }
+
   function completeAsUser(taskId: string, userId: string): TaskMutationResult {
     const task = q.taskById.get(taskId);
     if (!task) return failed("not_found", "Task not found");
@@ -609,6 +973,15 @@ export function makeTasksDb(db: Database, now: () => number) {
     moveTask,
     setDependencies,
     deleteTask,
+    claimTask,
+    renewClaim,
+    ackComments,
+    addComment,
+    updateComment,
+    deleteComment,
+    releaseClaim,
+    forceRelease,
+    completeAsAgent,
     completeAsUser,
     reopenTask,
   };

@@ -348,3 +348,188 @@ test("dependency replacement returns tombstones for removed edges", () => {
   expect(result.ok && result.value.deleted)
     .toContainEqual({ entity: "taskDependency", id: "task:first" });
 });
+
+test("two agents cannot claim the same available leaf", () => {
+  const { tdb } = freshTasks();
+  tdb.createTask("sess1", { id: "t1", title: "Work" });
+  const first = tdb.claimTask("sess1", { taskId: "t1", agentId: "a1", agentLabel: "Agent 1" });
+  expect(first.ok).toBe(true);
+  expect(tdb.claimTask("sess1", { taskId: "t1", agentId: "a2", agentLabel: "Agent 2" }))
+    .toMatchObject({ ok: false, code: "claimed" });
+});
+
+test("claim selection follows stored tree order and rejects parents and blocked leaves", () => {
+  const { tdb } = freshTasks();
+  tdb.createTask("sess1", { id: "parent", title: "Parent" });
+  tdb.createTask("sess1", { id: "later-root", title: "Later root" });
+  tdb.createTask("sess1", { id: "first-child", title: "First child", parentTaskId: "parent" });
+  tdb.createTask("sess1", { id: "second-child", title: "Second child", parentTaskId: "parent" });
+  tdb.setDependencies("first-child", ["second-child"]);
+
+  expect(tdb.claimTask("sess1", { taskId: "parent", agentId: "a1", agentLabel: "Agent" }))
+    .toMatchObject({ ok: false, code: "not_available" });
+  expect(tdb.claimTask("sess1", { taskId: "first-child", agentId: "a1", agentLabel: "Agent" }))
+    .toMatchObject({ ok: false, code: "not_available" });
+  const selected = tdb.claimTask("sess1", { agentId: "a1", agentLabel: "Agent" });
+  expect(selected.ok && selected.value.change.bundle.claims[0]?.taskId).toBe("second-child");
+});
+
+test("renewal after thirty seconds extends the lease to two minutes from now", () => {
+  const { tdb, setNow } = freshTasks();
+  tdb.createTask("sess1", { id: "t1", title: "Work" });
+  const claimed = tdb.claimTask("sess1", { taskId: "t1", agentId: "a1", agentLabel: "Agent" });
+  if (!claimed.ok) throw new Error("claim failed");
+  expect(claimed.value.change.bundle.claims[0]?.leaseExpiresAt).toBe(121_000);
+
+  setNow(31_000);
+  const renewed = tdb.renewClaim("t1", claimed.value.leaseToken);
+  expect(renewed.ok && renewed.value.leaseExpiresAt).toBe(151_000);
+});
+
+test("expired leases return their task to pending and cannot be renewed", () => {
+  const { tdb, setNow } = freshTasks();
+  tdb.createTask("sess1", { id: "t1", title: "Work" });
+  const claimed = tdb.claimTask("sess1", { taskId: "t1", agentId: "a1", agentLabel: "Agent" });
+  if (!claimed.ok) throw new Error("claim failed");
+
+  setNow(121_000);
+  expect(tdb.renewClaim("t1", claimed.value.leaseToken))
+    .toMatchObject({ ok: false, code: "lease_expired" });
+  expect(tdb.getBundle("sess1")).toMatchObject({
+    claims: [],
+    items: [{ id: "t1", state: "pending" }],
+  });
+});
+
+test("lease operations reject the wrong opaque token", () => {
+  const { db, tdb } = freshTasks();
+  tdb.createTask("sess1", { id: "t1", title: "Work" });
+  const claimed = tdb.claimTask("sess1", { taskId: "t1", agentId: "a1", agentLabel: "Agent" });
+  if (!claimed.ok) throw new Error("claim failed");
+
+  expect(tdb.renewClaim("t1", "wrong-token")).toMatchObject({ ok: false, code: "lease_mismatch" });
+  expect(tdb.ackComments("t1", "wrong-token", null)).toMatchObject({ ok: false, code: "lease_mismatch" });
+  expect(tdb.releaseClaim("t1", "wrong-token")).toMatchObject({ ok: false, code: "lease_mismatch" });
+  expect(tdb.completeAsAgent("t1", "wrong-token", "a1", "Done"))
+    .toMatchObject({ ok: false, code: "lease_mismatch" });
+  expect(tdb.completeAsAgent("t1", claimed.value.leaseToken, "a2", "Done"))
+    .toMatchObject({ ok: false, code: "lease_mismatch" });
+  expect(tdb.completeAsAgent("t1", claimed.value.leaseToken, "a1", "   "))
+    .toMatchObject({ ok: false, code: "invalid_input" });
+  const stored = db.query<{ lease_token_hash: string }, []>("SELECT lease_token_hash FROM task_claims").get()!;
+  expect(stored.lease_token_hash).not.toBe(claimed.value.leaseToken);
+  expect(stored.lease_token_hash).toHaveLength(64);
+});
+
+test("voluntary release can add an agent comment and forced release removes a claim", () => {
+  const { tdb } = freshTasks();
+  tdb.createTask("sess1", { id: "voluntary", title: "Voluntary" });
+  tdb.createTask("sess1", { id: "forced", title: "Forced" });
+  const voluntary = tdb.claimTask("sess1", {
+    taskId: "voluntary", agentId: "a1", agentLabel: "Agent One",
+  });
+  const forced = tdb.claimTask("sess1", { taskId: "forced", agentId: "a2", agentLabel: "Agent Two" });
+  if (!voluntary.ok || !forced.ok) throw new Error("claim failed");
+
+  const released = tdb.releaseClaim("voluntary", voluntary.value.leaseToken, "Pausing here");
+  expect(released.ok && released.value.bundle.items.find((item) => item.id === "voluntary")?.state)
+    .toBe("pending");
+  expect(released.ok && released.value.bundle.comments[0]).toMatchObject({
+    taskId: "voluntary",
+    authorType: "agent",
+    authorId: "a1",
+    authorLabel: "Agent One",
+    bodyMarkdown: "Pausing here",
+    kind: "comment",
+  });
+  const forceReleased = tdb.forceRelease("forced");
+  expect(forceReleased.ok && forceReleased.value.bundle.claims).toEqual([]);
+  expect(forceReleased.ok && forceReleased.value.bundle.items.find((item) => item.id === "forced")?.state)
+    .toBe("pending");
+});
+
+test("comments remain mutable by their author while a task is claimed", () => {
+  const { tdb } = freshTasks();
+  tdb.createTask("sess1", { id: "t1", title: "Work" });
+  tdb.claimTask("sess1", { taskId: "t1", agentId: "a1", agentLabel: "Agent" });
+  const actor = { authorType: "user" as const, authorId: "u1" };
+
+  expect(tdb.addComment("t1", {
+    id: "c1", ...actor, authorLabel: "You", bodyMarkdown: "Original",
+  }).ok).toBe(true);
+  expect(tdb.updateComment("c1", { ...actor, bodyMarkdown: "Edited" }).ok).toBe(true);
+  const bundle = tdb.getBundle("sess1");
+  expect(bundle.comments[0]).toMatchObject({ bodyMarkdown: "Edited", updatedAt: 1_000 });
+  expect(tdb.deleteComment("c1", actor).ok).toBe(true);
+  expect(tdb.getBundle("sess1").comments).toEqual([]);
+});
+
+test("only a regular comment author may edit or delete it", () => {
+  const { tdb } = freshTasks();
+  tdb.createTask("sess1", { id: "t1", title: "Work" });
+  tdb.addComment("t1", {
+    id: "c1", authorType: "user", authorId: "u1", authorLabel: "You", bodyMarkdown: "Original",
+  });
+
+  expect(tdb.updateComment("c1", {
+    authorType: "user", authorId: "u2", bodyMarkdown: "Hijacked",
+  })).toMatchObject({ ok: false, code: "not_available" });
+  expect(tdb.deleteComment("c1", { authorType: "agent", authorId: "u1" }))
+    .toMatchObject({ ok: false, code: "not_available" });
+  expect(tdb.getBundle("sess1").comments[0]?.bodyMarkdown).toBe("Original");
+});
+
+test("agent completion rejects unseen comments then atomically stores summary", () => {
+  const { tdb } = freshTasks();
+  tdb.createTask("sess1", { id: "t1", title: "Work" });
+  const claim = tdb.claimTask("sess1", { taskId: "t1", agentId: "a1", agentLabel: "Agent" });
+  const token = claim.ok ? claim.value.leaseToken : "";
+  tdb.addComment("t1", {
+    id: "c1", authorType: "user", authorId: "u1", authorLabel: "You", bodyMarkdown: "Check this",
+  });
+  const rejected = tdb.completeAsAgent("t1", token, "a1", "Done");
+  expect(rejected).toMatchObject({ ok: false, code: "unseen_comments" });
+  expect(!rejected.ok && rejected.value?.comments.map((comment) => comment.id)).toEqual(["c1"]);
+  expect(tdb.getBundle("sess1")).toMatchObject({
+    claims: [{ taskId: "t1" }],
+    items: [{ id: "t1", state: "in_progress" }],
+    comments: [{ id: "c1", kind: "comment" }],
+  });
+
+  expect(tdb.ackComments("t1", token, "c1").ok).toBe(true);
+  expect(tdb.completeAsAgent("t1", token, "a1", "Done").ok).toBe(true);
+  expect(tdb.getBundle("sess1")).toMatchObject({
+    claims: [],
+    items: [{ id: "t1", state: "completed", completedByType: "agent", completedById: "a1" }],
+    comments: [
+      { id: "c1", kind: "comment" },
+      { authorType: "agent", authorId: "a1", authorLabel: "Agent", bodyMarkdown: "Done", kind: "completion_summary" },
+    ],
+  });
+});
+
+test("completion summaries are immutable and retained across reopen and re-complete", () => {
+  const { tdb, setNow } = freshTasks();
+  tdb.createTask("sess1", { id: "t1", title: "Work" });
+  const first = tdb.claimTask("sess1", { taskId: "t1", agentId: "a1", agentLabel: "Agent One" });
+  if (!first.ok) throw new Error("claim failed");
+  expect(tdb.completeAsAgent("t1", first.value.leaseToken, "a1", "First pass").ok).toBe(true);
+  const firstSummary = tdb.getBundle("sess1").comments[0]!;
+  expect(tdb.updateComment(firstSummary.id, {
+    authorType: "agent", authorId: "a1", bodyMarkdown: "Changed",
+  })).toMatchObject({ ok: false, code: "not_available" });
+  expect(tdb.deleteComment(firstSummary.id, { authorType: "agent", authorId: "a1" }))
+    .toMatchObject({ ok: false, code: "not_available" });
+
+  setNow(2_000);
+  tdb.reopenTask("t1");
+  const second = tdb.claimTask("sess1", { taskId: "t1", agentId: "a2", agentLabel: "Agent Two" });
+  if (!second.ok) throw new Error("claim failed");
+  tdb.ackComments("t1", second.value.leaseToken, firstSummary.id);
+  expect(tdb.completeAsAgent("t1", second.value.leaseToken, "a2", "Second pass").ok).toBe(true);
+  expect(tdb.getBundle("sess1").comments.map((comment) => [comment.bodyMarkdown, comment.kind]))
+    .toEqual([
+      ["First pass", "completion_summary"],
+      ["Second pass", "completion_summary"],
+    ]);
+});
