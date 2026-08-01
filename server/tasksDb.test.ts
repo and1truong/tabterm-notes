@@ -118,6 +118,37 @@ test("create appends siblings and move keeps both sibling groups densely ordered
   expect(siblingIds(db, listId, "a")).toEqual(["c", "a1"]);
 });
 
+test("move rejects when reordering would change a claimed sibling", () => {
+  const { db, tdb } = freshTasks();
+  tdb.createTask("sess1", { id: "claimed", title: "Claimed" });
+  tdb.createTask("sess1", { id: "moving", title: "Moving" });
+  const listId = tdb.getBundle("sess1").list!.id;
+  db.run("UPDATE task_items SET state = 'in_progress' WHERE id = 'claimed'");
+  db.run(
+    "INSERT INTO task_claims (task_id, agent_id, agent_label, lease_token_hash, claimed_at, lease_expires_at) VALUES (?, 'a1', 'Agent', 'hash', 1000, 2000)",
+    ["claimed"],
+  );
+
+  expect(tdb.moveTask("moving", { parentTaskId: null, position: 0 }))
+    .toMatchObject({ ok: false, code: "claimed" });
+  expect(siblingIds(db, listId, null)).toEqual(["claimed", "moving"]);
+});
+
+test("delete rejects when compacting would change a claimed sibling", () => {
+  const { db, tdb } = freshTasks();
+  tdb.createTask("sess1", { id: "remove", title: "Remove" });
+  tdb.createTask("sess1", { id: "claimed", title: "Claimed" });
+  const listId = tdb.getBundle("sess1").list!.id;
+  db.run("UPDATE task_items SET state = 'in_progress' WHERE id = 'claimed'");
+  db.run(
+    "INSERT INTO task_claims (task_id, agent_id, agent_label, lease_token_hash, claimed_at, lease_expires_at) VALUES (?, 'a1', 'Agent', 'hash', 1000, 2000)",
+    ["claimed"],
+  );
+
+  expect(tdb.deleteTask("remove", false)).toMatchObject({ ok: false, code: "claimed" });
+  expect(siblingIds(db, listId, null)).toEqual(["remove", "claimed"]);
+});
+
 test("subtree delete removes descendants and returns all cascade tombstones", () => {
   const { db, tdb, setNow } = freshTasks();
   tdb.createTask("sess1", { id: "root", title: "Root" });
@@ -198,6 +229,42 @@ test("user completion rolls up parents and reopening a descendant reopens ancest
   expect(reopened.ok && reopened.value.bundle.items.every((item) => item.completedAt === null)).toBe(true);
 });
 
+test("moving an incomplete child away rolls up its old parent", () => {
+  const { tdb } = freshTasks();
+  tdb.createTask("sess1", { id: "parent", title: "Parent" });
+  tdb.createTask("sess1", { id: "done", title: "Done", parentTaskId: "parent" });
+  tdb.createTask("sess1", { id: "moving", title: "Moving", parentTaskId: "parent" });
+  tdb.completeAsUser("done", "u1");
+
+  const result = tdb.moveTask("moving", { parentTaskId: null, position: 1 });
+  expect(result.ok && result.value.bundle.items.find((item) => item.id === "parent")?.state)
+    .toBe("completed");
+});
+
+test("moving a completed child under a parent rolls up the destination", () => {
+  const { tdb } = freshTasks();
+  tdb.createTask("sess1", { id: "done", title: "Done" });
+  tdb.createTask("sess1", { id: "destination", title: "Destination" });
+  tdb.completeAsUser("done", "u1");
+
+  const result = tdb.moveTask("done", { parentTaskId: "destination", position: 0 });
+  expect(result.ok && result.value.bundle.items.find((item) => item.id === "destination")?.state)
+    .toBe("completed");
+});
+
+test("deleting an incomplete child rolls up the affected ancestry", () => {
+  const { tdb } = freshTasks();
+  tdb.createTask("sess1", { id: "root", title: "Root" });
+  tdb.createTask("sess1", { id: "parent", title: "Parent", parentTaskId: "root" });
+  tdb.createTask("sess1", { id: "done", title: "Done", parentTaskId: "parent" });
+  tdb.createTask("sess1", { id: "remove", title: "Remove", parentTaskId: "parent" });
+  tdb.completeAsUser("done", "u1");
+
+  const result = tdb.deleteTask("remove", false);
+  expect(result.ok && result.value.bundle.items.map((item) => [item.id, item.state]))
+    .toEqual([["root", "completed"], ["parent", "completed"], ["done", "completed"]]);
+});
+
 test("adding an incomplete child reopens a completed parent chain", () => {
   const { tdb } = freshTasks();
   tdb.createTask("sess1", { id: "root", title: "Root" });
@@ -205,6 +272,25 @@ test("adding an incomplete child reopens a completed parent chain", () => {
   const result = tdb.createTask("sess1", { id: "child", title: "Child", parentTaskId: "root" });
   expect(result.ok && result.value.bundle.items.map((item) => [item.id, item.state]))
     .toEqual([["root", "pending"], ["child", "pending"]]);
+});
+
+test("create revalidates its parent after entering the transaction", () => {
+  const { db, tdb } = freshTasks();
+  tdb.createTask("sess1", { id: "parent", title: "Parent" });
+  let entered = false;
+  const racingTasks = makeTasksDb(db, () => {
+    if (!entered) {
+      entered = true;
+      db.run("DELETE FROM task_items WHERE id = 'parent'");
+    }
+    return 2_000;
+  });
+  let result: ReturnType<typeof racingTasks.createTask> | null = null;
+
+  expect(() => {
+    result = racingTasks.createTask("sess1", { id: "child", title: "Child", parentTaskId: "parent" });
+  }).not.toThrow();
+  expect(result).toMatchObject({ ok: false, code: "not_found" });
 });
 
 test("active claims reject task mutations and expired claims are released", () => {

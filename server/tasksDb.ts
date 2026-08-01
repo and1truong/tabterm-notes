@@ -299,10 +299,18 @@ export function makeTasksDb(db: Database, now: () => number) {
     taskIds: string[],
     at: number,
   ) {
-    for (const [position, taskId] of taskIds.entries()) {
-      q.setParentPosition.run(parentTaskId, position, at, taskId);
+    const changedTasks = taskIds.flatMap((taskId, position) => {
+      const task = q.taskById.get(taskId);
+      if (!task || (task.parent_task_id === parentTaskId && task.position === position)) return [];
+      return [{ task, position }];
+    });
+    if (changedTasks.some(({ task }) => hasActiveClaim(task.id, at))) {
+      abort("claimed", "Sibling ordering would change a claimed task");
     }
-    q.touchList.run(at, listId);
+    for (const { task, position } of changedTasks) {
+      q.setParentPosition.run(parentTaskId, position, at, task.id);
+    }
+    if (changedTasks.length > 0) q.touchList.run(at, listId);
   }
 
   function childIdsByParent(listId: string): Map<string, string[]> {
@@ -358,6 +366,25 @@ export function makeTasksDb(db: Database, now: () => number) {
     }
   }
 
+  function reconcileStructuralAncestors(parentTaskId: string | null, at: number) {
+    let currentId = parentTaskId;
+    const visited = new Set<string>();
+    while (currentId !== null && !visited.has(currentId)) {
+      visited.add(currentId);
+      const parent = q.taskById.get(currentId);
+      if (!parent) break;
+      const children = q.itemsByList.all(parent.list_id)
+        .filter((item) => item.parent_task_id === parent.id);
+      const shouldComplete = children.length > 0 && children.every((child) => child.state === "completed");
+      if (shouldComplete && parent.state !== "completed") {
+        q.setCompleted.run(at, null, null, at, parent.id);
+      } else if (!shouldComplete && parent.state === "completed") {
+        q.setPending.run(at, parent.id);
+      }
+      currentId = parent.parent_task_id;
+    }
+  }
+
   function getBundle(sessionId: string): TaskBundle {
     return db.transaction(() => {
       const list = q.listBySession.get(sessionId);
@@ -373,18 +400,17 @@ export function makeTasksDb(db: Database, now: () => number) {
   ): TaskMutationResult {
     const title = input.title.trim();
     if (title.length === 0) return failed("invalid_input", "Task title is required");
-    if (!q.sessionExists.get(sessionId)) return failed("not_found", "Session not found");
-    if (q.taskById.get(input.id)) return failed("invalid_input", "Task id already exists");
-
-    const parent = input.parentTaskId === undefined ? null : q.taskById.get(input.parentTaskId);
-    if (input.parentTaskId !== undefined && !parent) return failed("not_found", "Parent task not found");
-    if (parent) {
-      const parentList = q.listById.get(parent.list_id);
-      if (parentList?.session_id !== sessionId) return failed("cross_list", "Parent belongs to another list");
-    }
 
     return mutate(() => {
       const at = now();
+      if (!q.sessionExists.get(sessionId)) abort("not_found", "Session not found");
+      if (q.taskById.get(input.id)) abort("invalid_input", "Task id already exists");
+      const parent = input.parentTaskId === undefined ? null : q.taskById.get(input.parentTaskId);
+      if (input.parentTaskId !== undefined && !parent) abort("not_found", "Parent task not found");
+      if (parent) {
+        const parentList = q.listById.get(parent.list_id);
+        if (parentList?.session_id !== sessionId) abort("cross_list", "Parent belongs to another list");
+      }
       q.insertList.run(randomUUID(), sessionId, at, at);
       const list = q.listBySession.get(sessionId)!;
       const deleted: DeletedEntity[] = [];
@@ -392,7 +418,7 @@ export function makeTasksDb(db: Database, now: () => number) {
       if (parent && hasActiveClaim(parent.id, at)) abort("claimed", "Parent task is claimed");
       const position = (q.maxSiblingPosition.get(list.id, parent?.id ?? null)?.position ?? -1) + 1;
       q.insertTask.run(input.id, list.id, parent?.id ?? null, title, position, at, at);
-      if (parent) reopenUpwards(parent.id, at);
+      if (parent) reconcileStructuralAncestors(parent.id, at);
       q.touchList.run(at, list.id);
       return changed(list.id, deleted);
     });
@@ -458,7 +484,8 @@ export function makeTasksDb(db: Database, now: () => number) {
         .map((row) => row.id).filter((id) => id !== taskId);
       destinationIds.splice(Math.min(move.position, destinationIds.length), 0, taskId);
       writeSiblingOrder(existing.list_id, destinationParentId, destinationIds, at);
-      if (parent && existing.state !== "completed") reopenUpwards(parent.id, at);
+      reconcileStructuralAncestors(oldParentId, at);
+      if (destinationParentId !== oldParentId) reconcileStructuralAncestors(destinationParentId, at);
       return changed(existing.list_id, deleted);
     });
   }
@@ -536,6 +563,7 @@ export function makeTasksDb(db: Database, now: () => number) {
       }
       q.deleteTask.run(taskId);
       if (!keepChildren) writeSiblingOrder(task.list_id, task.parent_task_id, oldSiblingIds, at);
+      reconcileStructuralAncestors(task.parent_task_id, at);
       q.touchList.run(at, task.list_id);
       return changed(task.list_id, deleted);
     });
